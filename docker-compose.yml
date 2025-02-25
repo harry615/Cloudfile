@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  api:
+    build: .
+    container_name: fastapi_app
+    ports:
+      - "8000:8000"
+    environment:
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING}
+      - DATABASE_URL=${DATABASE_URL}
+    volumes:
+      - .:/app
+    dns:
+      - 8.8.8.8
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
