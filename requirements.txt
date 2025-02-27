@@ -5,3 +5,5 @@ uvicorn
 sqlalchemy
 python-multipart
 azure-storage-blob
+python-dotenv
+cryptography

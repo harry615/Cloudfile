@@ -1,6 +1,6 @@
 import os
 from sqlmodel import SQLModel, create_engine
-from models import User, FileRecord  # Added imports for schema creation
+from models import User, FileRecord , SharedFile # Added imports for schema creation
 
 # Azure Database connection string 
 DATABASE_URL = os.environ.get("DATABASE_URL")
