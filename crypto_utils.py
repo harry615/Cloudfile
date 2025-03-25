@@ -1,8 +1,6 @@
-# crypto_utils.py
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.fernet import Fernet
 import os
 import base64
 
@@ -42,19 +40,25 @@ def load_private_key(private_key_bytes):
 def encrypt_file_key(file_key: bytes, public_key):
     return public_key.encrypt(
         file_key,
-        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                     algorithm=hashes.SHA256(),
+                     label=None)
     )
 
 def decrypt_file_key(encrypted_file_key: bytes, private_key):
     return private_key.decrypt(
         encrypted_file_key,
-        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                     algorithm=hashes.SHA256(),
+                     label=None)
     )
 
-def encrypt_file(file_data: bytes, file_key: bytes):
-    cipher = Fernet(file_key)
-    return cipher.encrypt(file_data)
-
-def decrypt_file(encrypted_data: bytes, file_key: bytes):
-    cipher = Fernet(file_key)
-    return cipher.decrypt(encrypted_data)
+# The following functions are now unused in a fully E2EE solution,
+# because file encryption/decryption is handled on the client.
+# def encrypt_file(file_data: bytes, file_key: bytes):
+#     cipher = Fernet(file_key)
+#     return cipher.encrypt(file_data)
+#
+# def decrypt_file(encrypted_data: bytes, file_key: bytes):
+#     cipher = Fernet(file_key)
+#     return cipher.decrypt(encrypted_data)

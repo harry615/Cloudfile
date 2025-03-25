@@ -8,3 +8,5 @@ env/
 venv/
 .env
 test.txt
+client/node_modules/
+client/build/

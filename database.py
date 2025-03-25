@@ -9,4 +9,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 engine = create_engine(DATABASE_URL, echo=True)
 
 def create_db_and_tables():
+    # Drop all tables first (development only) remember to remove later 
+    SQLModel.metadata.drop_all(engine)
+    # Then recreate them
     SQLModel.metadata.create_all(engine)
+
