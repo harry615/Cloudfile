@@ -15,6 +15,8 @@ function App() {
   const [user, setUser] = useState(null);
   const [files, setFiles] = useState([]);
   const [fileToUpload, setFileToUpload] = useState(null);
+  const [shareLink, setShareLink] = useState("");
+  const [shareExpiry, setShareExpiry] = useState(60); // default expiry in minutes
   const [error, setError] = useState('');
   const [showSignup, setShowSignup] = useState(false);
 
@@ -273,8 +275,8 @@ async function importRecipientPublicKey(publicKeyPem) {
     { name: "RSA-OAEP", hash: "SHA-256" },
     true,
     ["encrypt"]
-  );
-}
+  )
+};
 
 const shareFile = async (filename, recipientUsername) => {
   try {
@@ -336,6 +338,24 @@ const shareFile = async (filename, recipientUsername) => {
     setError("Share error: " + err.message);
   }
 };
+   // Generate a share link by calling the backend endpoint
+const generateExpiringShareLink = async (filename) => {
+  try {
+    const response = await fetch(
+      `http://localhost:8000/users/${user.id}/files/${filename}/shareLink?expiry=${shareExpiry}`
+    );
+    if (!response.ok) {
+      setError("Failed to generate expiring share link.");
+      return;
+    }
+    const data = await response.json();
+    setShareLink(data.share_link);
+    alert(`Expiring share link (expires in ${shareExpiry} minutes): ${data.share_link}`);
+  } catch (err) {
+    setError("Expiring share link error: " + err.message);
+  }
+};
+
 
 
   const handleLogout = () => {
@@ -412,10 +432,17 @@ const shareFile = async (filename, recipientUsername) => {
                 {file.filename}{" "}
                 <button onClick={() => downloadFile(file.filename)}>Download</button>{" "}
                 <button onClick={() => deleteFile(file.filename)}>Delete</button>{" "}
-                <ShareFile file={file} shareFile={shareFile} />
+                <ShareFile file={file} shareFile={shareFile} generateExpiringShareLink={generateExpiringShareLink}></ShareFile>              
               </li>
             ))}
+
           </ul>
+          {shareLink && (
+            <div>
+              <h4>Share Link</h4>
+              <p>{shareLink}</p>
+            </div>
+          )}
           {error && <p style={{ color: "red" }}>{error}</p>}
         </div>
       )}
@@ -424,20 +451,27 @@ const shareFile = async (filename, recipientUsername) => {
 }
 
 // Component for sharing a file by recipient username.
-const ShareFile = ({ file, shareFile }) => {
+const ShareFile = ({ file, shareFile, generateExpiringShareLink }) => {
   const [recipientUsername, setRecipientUsername] = useState("");
   return (
-    <span>
-      <input
-        type="text"
-        placeholder="Recipient username"
-        value={recipientUsername}
-        onChange={(e) => setRecipientUsername(e.target.value)}
-      />
-      <button onClick={() => shareFile(file.filename, recipientUsername)}>
-        Share
-      </button>
-    </span>
+    <div>
+      <div style={{ marginTop: '5px' }}>
+        <input
+          type="text"
+          placeholder="Recipient username"
+          value={recipientUsername}
+          onChange={(e) => setRecipientUsername(e.target.value)}
+        />
+        <button onClick={() => shareFile(file.filename, recipientUsername)}>
+          Share with Recipient
+        </button>
+      </div>
+      <div style={{ marginTop: '5px' }}>
+        <button onClick={() => generateExpiringShareLink(file.filename)}>
+          Generate Expiring Share Link
+        </button>
+      </div>
+    </div>
   );
 };
 

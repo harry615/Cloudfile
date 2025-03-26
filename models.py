@@ -36,6 +36,15 @@ class UserPublic(UserBase):
         # You can also convert other binary fields if needed.
         return cls(**data)
 
+class UserSignup(UserBase):
+    name: str
+    age: int | None = None
+    password: str
+
+class LoginRequest(UserBase):
+    name: str
+    password: str
+
 class UserCreate(UserBase):
     secret_name: str
 

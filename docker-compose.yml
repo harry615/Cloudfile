@@ -9,8 +9,9 @@ services:
     environment:
       - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING}
       - DATABASE_URL=${DATABASE_URL}
+      - AZURE_ACCOUNT_KEY=${AZURE_ACCOUNT_KEY}
     volumes:
-      - .:/app
+      - .:/app:rw
     dns:
       - 8.8.8.8
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -22,8 +23,8 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./client:/app
-      - /app/node_modules  # Avoid overwriting node_modules
+      - ./client:/app:rw
+      - /app/node_modules # Avoid overwriting node_modules
     depends_on:
       - backend
     

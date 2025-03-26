@@ -1,17 +1,21 @@
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Header
-from pydantic import BaseModel
-from sqlmodel import Session, select, delete
-import os, io, base64
-from azure.storage.blob import BlobServiceClient
+from sqlmodel import Session, select
+import os, io
 from fastapi.responses import StreamingResponse
 from database import engine
-from models import User, UserPublic, FileRecord, SharedFile
-
+from models import User, UserPublic, FileRecord, SharedFile , UserSignup , LoginRequest 
+from datetime import datetime, timedelta
+from azure.storage.blob import generate_blob_sas, BlobSasPermissions, BlobServiceClient
+from urllib.parse import unquote
 router = APIRouter()
 
 # Azure Blob Storage configuration
 AZURE_STORAGE_CONNECTION_STRING = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+AZURE_ACCOUNT_KEY = os.environ.get("AZURE_ACCOUNT_KEY")
+if not AZURE_ACCOUNT_KEY:
+    raise Exception("AZURE_ACCOUNT_KEY is not set or empty!")
+
 AZURE_CONTAINER_NAME = "harry61551"
 blob_service_client = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
 
@@ -22,14 +26,25 @@ def get_session():
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
+
+#SAS URL helper function 
+def generate_file_share_link(blob_name: str, expiry_minutes: int = 60) -> str:
+    
+    sas_token = generate_blob_sas(
+        account_name=blob_service_client.account_name,
+        container_name=AZURE_CONTAINER_NAME,
+        blob_name=blob_name,
+        account_key=AZURE_ACCOUNT_KEY,
+        permission=BlobSasPermissions(read=True),
+        expiry=datetime.utcnow() + timedelta(minutes=expiry_minutes)
+    )
+    blob_url = f"https://{blob_service_client.account_name}.blob.core.windows.net/{AZURE_CONTAINER_NAME}/{blob_name}"
+    share_link = f"{blob_url}?{sas_token}"
+    return share_link
+
 # ------------------------------------------------------------------
 # User Signup and Login Endpoints (unchanged)
 # ------------------------------------------------------------------
-
-class UserSignup(BaseModel):
-    name: str
-    age: int | None = None
-    password: str
 
 @router.post("/users/signup", response_model=UserPublic)
 def signup_user(user: UserSignup, session: SessionDep):
@@ -53,10 +68,6 @@ def signup_user(user: UserSignup, session: SessionDep):
     session.commit()
     session.refresh(db_user)
     return UserPublic.from_orm(db_user)
-
-class LoginRequest(BaseModel):
-    name: str
-    password: str
 
 @router.post("/users/login", response_model=UserPublic)
 def login_user(login_data: LoginRequest, session: SessionDep):
@@ -138,9 +149,9 @@ async def download_user_file(user_id: int, session: SessionDep, filename: str):
         encrypted_data = blob_client.download_blob().readall()
         headers = {
             "Content-Disposition": f"attachment; filename={filename}",
-            "X-Encrypted-File-Key": file_record.encrypted_file_key,
-            "X-File-Key-IV": file_record.file_key_iv,
-            "X-File-Data-IV": file_record.file_data_iv,
+            #"X-Encrypted-File-Key": file_record.encrypted_file_key,
+            #"X-File-Key-IV": file_record.file_key_iv,
+            #"X-File-Data-IV": file_record.file_data_iv,
         }
         return StreamingResponse(io.BytesIO(encrypted_data), media_type="application/octet-stream", headers=headers)
     except Exception as e:
@@ -184,33 +195,7 @@ async def delete_user_file(user_id: int, session: SessionDep, filename: str):
         session.rollback()
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
-# ------------------------------------------------------------------
-# Share Endpoint – now accepts a JSON payload with the pre-encrypted shared file key.
-# The client handles all decryption and re-encryption.
-# ------------------------------------------------------------------
 
-class ShareRequest(BaseModel):
-    shared_file_key: str  # Base64-encoded shared file key computed on the client
-""""
-@router.post("/users/{user_id}/share/{filename}")
-async def share_file(user_id: int, filename: str, recipient_id: int, share_req: ShareRequest, session: SessionDep):
-    file_record = session.exec(
-        select(FileRecord).where(FileRecord.user_id == user_id, FileRecord.filename == filename)
-    ).first()
-    if not file_record:
-        raise HTTPException(status_code=404, detail="File not found or not owned by this user")
-    recipient = session.get(User, recipient_id)
-    if not recipient:
-        raise HTTPException(status_code=404, detail="Recipient not found")
-    shared = SharedFile(
-        file_id=file_record.id,
-        user_id=recipient_id,
-        encrypted_file_key=share_req.shared_file_key
-    )
-    session.add(shared)
-    session.commit()
-    return {"message": f"File {filename} shared successfully"}
-"""
 @router.post("/users/{user_id}/share/{filename}")
 async def share_file(user_id: int, filename: str, recipient_id: int, session: SessionDep):
     file_record = session.exec(
@@ -234,6 +219,21 @@ async def share_file(user_id: int, filename: str, recipient_id: int, session: Se
     
     return {"message": f"File {filename} shared successfully"}
 
+@router.get("/users/{user_id}/files/{filename}/shareLink")
+async def get_file_share_link(user_id: int, filename: str,session: SessionDep, expiry: int = 60):
+    # Verify that the file exists and that the user is allowed to share it.
+    filename = unquote(filename)
+    file_record = session.exec(
+        select(FileRecord).where(FileRecord.user_id == user_id, FileRecord.filename == filename)
+    ).first()
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        share_link = generate_file_share_link(filename, expiry_minutes=expiry)
+        return {"share_link": share_link, "expiry_minutes": expiry}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not generate share link: {str(e)}")
 # ------------------------------------------------------------------
 # Additional User Endpoints
 # ------------------------------------------------------------------
