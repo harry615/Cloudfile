@@ -12,10 +12,10 @@ Need 0.0.0.0 in the docker file as uvicorn binds to 127.0.0.1 by default which r
 - File sharing without encryption
 - Shared files deletion from sender/receiver 
 - Download (no encryption)
-
-Todo :
 - Add front end keys built from user .
 - File sharing links etc
+
+Nice to haves for future updates :
 - Deploy FastAPI backend on Azure App Service
 - Deploy React frontend on Azure Static Web Apps
 
