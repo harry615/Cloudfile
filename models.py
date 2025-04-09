@@ -15,13 +15,29 @@ class User(UserBase, table=True):
     salt: bytes = Field(sa_column=Column(LargeBinary))
     public_key: bytes = Field(sa_column=Column(LargeBinary))
     encrypted_private_key: bytes = Field(sa_column=Column(LargeBinary))
+    decrypted_private_key: bytes = Field(sa_column=Column(LargeBinary))
+    iv: bytes = Field(sa_column=Column(LargeBinary))
 
 class UserPublic(UserBase):
     id: int
     salt: str
+    public_key: str
+    encrypted_private_key: str
+    iv: str
 
     @validator('salt', pre=True, always=True)
     def encode_salt(cls, v):
+        if isinstance(v, bytes):
+            return base64.b64encode(v).decode("utf-8")
+        return v
+    @validator('encrypted_private_key', pre=True, always=True)
+    def encode_encrypted_private_key(cls, v):
+        if isinstance(v, bytes):
+            return base64.b64encode(v).decode("utf-8")
+        return v
+
+    @validator('iv', pre=True, always=True)
+    def encode_iv(cls, v):
         if isinstance(v, bytes):
             return base64.b64encode(v).decode("utf-8")
         return v
@@ -40,6 +56,10 @@ class UserSignup(UserBase):
     name: str
     age: int | None = None
     password: str
+    salt: str          # Base64-encoded salt generated on the frontend.
+    public_key: str    # Public key in PEM or base64 format.
+    encrypted_private_key: str  # Base64-encoded encrypted private key.
+    iv: str            # Base64-encoded IV used for encrypting the private key.
 
 class LoginRequest(UserBase):
     name: str
@@ -61,8 +81,24 @@ class FileRecord(SQLModel, table=True):
     encrypted_file_key: str = Field(sa_column=Column(String(512)))
     file_key_iv: str = Field(sa_column=Column(String(128)), default="")
     file_data_iv: str = Field(sa_column=Column(String(128)), default="")
+
+class DownloadFileResponse(SQLModel):
+    file_data: str              # Base64-encoded encrypted file data
+    encrypted_file_key: str
+    file_key_iv: str
+    file_data_iv: str
+
+class SharedDownloadResponse(SQLModel):
+    file_data: str           # Base64-encoded encrypted file data
+    encrypted_file_key: str  # Encrypted file key (encrypted with recipient's RSA public key)
+    file_data_iv: str        # IV for file data decryption
+
+
 class SharedFile(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     file_id: int = Field(foreign_key="filerecord.id")
     user_id: int = Field(foreign_key="user.id")
     encrypted_file_key: str = Field(sa_column=Column(String(512)))
+
+class ShareRequest(SQLModel):
+    shared_file_key: str

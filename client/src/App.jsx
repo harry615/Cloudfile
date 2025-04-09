@@ -72,6 +72,40 @@ function App() {
       const data = await response.json();
       // Store plaintext password in state (for key derivation), but do not persist it.
       data.password = loginData.password;
+      
+
+      if (data.salt) { // Did backend return a salt
+        // Convert the base64 encoded salt to an array buffer
+        const saltBuffer = base64ToArrayBuffer(data.salt);
+        // Derive a key from the user's password and the salt 
+        const kek = await deriveKey(data.password, saltBuffer);
+        // Export the derived key as raw bytes
+        const exportedKey = await crypto.subtle.exportKey("raw", kek);
+        // Convert the key to base64 for easier debugging/logging
+        const keyBase64 = arrayBufferToBase64(exportedKey);
+        console.log("Derived Key (Base64):", keyBase64);
+        console.log("Our current data.iv:", data.iv);
+        const ivBuffer = base64ToArrayBuffer(data.iv);
+        const encryptedPrivateKeyBuffer = base64ToArrayBuffer(data.encrypted_private_key);
+
+        // Decrypt the encrypted private key using AES-GCM.
+        const decryptedPrivateKeyBuffer = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: new Uint8Array(ivBuffer) },
+          kek,
+          encryptedPrivateKeyBuffer
+        );
+        
+        // Convert the decrypted private key to Base64 for easier usage (or to a PEM string if needed).
+        const decryptedPrivateKeyBase64 = arrayBufferToBase64(decryptedPrivateKeyBuffer);
+        console.log("Decrypted Private Key (Base64):", decryptedPrivateKeyBase64);
+        const pemPrivateKey = `-----BEGIN PRIVATE KEY-----\n${decryptedPrivateKeyBase64.match(/.{1,64}/g).join('\n')}\n-----END PRIVATE KEY-----`;
+        console.log("Decrypted Private Key (PEM):", pemPrivateKey);
+        data.decrypted_private_key = pemPrivateKey;
+
+        
+      } else {
+        console.warn("No salt provided in user data")
+      }
       setUser(data);
       setError('');
     } catch (err) {
@@ -82,15 +116,71 @@ function App() {
   const handleSignup = async (e) => {
     e.preventDefault();
     try {
+      // Generate a random salt - 16 bytes
+      const saltBuffer = crypto.getRandomValues(new Uint8Array(16));
+      const saltBase64 = arrayBufferToBase64(saltBuffer);
+
+      // Derive a key from the user's password and the salt , THIS IS THE KEK
+      const derivedKey = await deriveKey(signupData.password, saltBuffer);
+
+      // Generate an RSA key pair for the user using the web crypto API
+      const keyPair = await crypto.subtle.generateKey(
+        {
+          name: "RSA-OAEP",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-256"
+        },
+        true,
+        ["encrypt","decrypt"]       
+      );
+
+      // Export the public key to spki Array buffer , then convert to base64
+      const publicKeyBuffer = await crypto.subtle.exportKey("spki", keyPair.publicKey);
+      const publicKeyBase64 = arrayBufferToBase64(publicKeyBuffer);
+
+      // wrap with PEM headers
+
+      const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${publicKeyBase64}\n-----END PUBLIC KEY-----`;
+      
+      // export the private key ready for encryption
+      const privateKeyBuffer = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+
+      // Encrypt the private key using the derived key with AES-GCM , THIS IS FOR RSA FILE SHARING
+      const iv = crypto.getRandomValues(new Uint8Array(12)); // 12 Byte IV for AES-GCM
+      const encryptedPrivateKeyBuffer = await crypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv: iv
+        },
+        derivedKey,
+        privateKeyBuffer
+      );
+
+      // Convert the encrypted private key an IV to Base64 for transmission
+
+      const encryptedPrivateKeyBase64 = arrayBufferToBase64(encryptedPrivateKeyBuffer);
+      const ivBase64 = arrayBufferToBase64(iv);
+
+      // Signup payload
+
+      const payload = {
+        name: signupData.name,
+        age: signupData.age ? Number(signupData.age) : null,
+        // For auth you can send a hashed password
+        password: signupData.password,
+        salt : saltBase64,
+        public_key: publicKeyPem,
+        encrypted_private_key: encryptedPrivateKeyBase64,
+        iv: ivBase64
+      };
+
       const response = await fetch('http://localhost:8000/users/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: signupData.name,
-          age: signupData.age ? Number(signupData.age) : null,
-          password: signupData.password
-        })
+        body: JSON.stringify(payload)
       });
+
       if (!response.ok) {
         const err = await response.json();
         setError(err.detail || 'Signup failed');
@@ -160,14 +250,62 @@ const uploadFile = async () => {
     return;
   }
   try {
+    // Read file as an array buffer
+    const fileBuffer = await fileToUpload.arrayBuffer();
+
+    // Generate a unique file key (AES-GCM 256bit)
+    const fileKey = await crypto.subtle.generateKey(
+      { name: "AES-GCM", length:256},
+      true,
+      ["encrypt","decrypt"]
+    );
+
+    // Export the raw file key
+    const fileKeyRaw = await crypto.subtle.exportKey("raw",fileKey);
+
+    // Derive the user's KEK using password/salt
+    const saltBuffer = base64ToArrayBuffer(user.salt);
+    const kek = await deriveKey(user.password, saltBuffer);
+
+    // Encrypt the file key with the KEK
+    const keyIv = crypto.getRandomValues(new Uint8Array(12));
+    const encryptedFileKeyBuffer = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: keyIv},
+      kek,
+      fileKeyRaw,
+    );
+
+    // Encrypt the file data with the file key.
+    const fileIv = crypto.getRandomValues(new Uint8Array(12)); // IV for file encryption.
+    const encryptedFileBuffer = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: fileIv },
+      fileKey,
+      fileBuffer  
+    );
+
+    // Convert the IV's and encrypted file key to base64
+    const fileIvBase64 = arrayBufferToBase64(fileIv);
+    const keyIvBase64 = arrayBufferToBase64(keyIv);
+    const encryptedFileKeyBase64 = arrayBufferToBase64(encryptedFileKeyBuffer);
+
+    console.log("Encrypted File Key (Base64):", encryptedFileKeyBase64);
+    console.log("Key IV (Base64):", keyIvBase64);
+    console.log("File Data IV (Base64):", fileIvBase64);
+
+    // Prepare the encrypted file as a blob
+    const encryptedBlob = new Blob([new Uint8Array(encryptedFileBuffer)]);
+
     // Create FormData and append the raw file.
     const formData = new FormData();
-    formData.append("file", fileToUpload, fileToUpload.name);
+    formData.append("file", encryptedBlob, fileToUpload.name);
+    formData.append("encrypted_file_key", encryptedFileKeyBase64);
+    formData.append("file_key_iv", keyIvBase64);
+    formData.append("file_data_iv", fileIvBase64);
 
-    // Make a POST request without any encryption headers.
+    // Make a POST request with encryption headers
     const response = await fetch(`http://localhost:8000/users/${user.id}/upload/`, {
       method: "POST",
-      body: formData
+      body: formData,     
     });
     
     if (!response.ok) {
@@ -182,49 +320,73 @@ const uploadFile = async () => {
     setError("Upload error: " + err.message);
   }
 };
-
+const downloadFile = async (file) => {
+  if (file.user_id === user.id) {
+    await downloadOwnFile(file.filename);
+  } else {
+    await downloadSharedFile(file.filename);
+  }
+};
   // Download file with client-side decryption.
-  const downloadFile = async (filename) => {
+const downloadOwnFile = async (filename) => {
     try {
-      const response = await fetch(`http://localhost:8000/users/${user.id}/files/${filename}`);
-      if (!response.ok) {
+      const response = await fetch(`http://localhost:8000/users/${user.id}/files/${filename}/download`);
+    if (!response.ok) {
         setError("Download failed.");
         return;
       }
-      /*
-      const encryptedFileKeyBase64 = response.headers.get("X-Encrypted-File-Key");
-      const keyIvBase64 = response.headers.get("X-File-Key-IV");
-      const fileDataIvBase64 = response.headers.get("X-File-Data-IV");
+      const data = await response.json();
+      const encryptedBuffer = base64ToArrayBuffer(data.file_data);
+    
+      // Convert the other fields from Base64.
+      const encryptedFileKeyBuffer = base64ToArrayBuffer(data.encrypted_file_key);
+      const keyIv = new Uint8Array(base64ToArrayBuffer(data.file_key_iv));
+      const fileDataIv = new Uint8Array(base64ToArrayBuffer(data.file_data_iv));
       
-      if (!encryptedFileKeyBase64 || !keyIvBase64 || !fileDataIvBase64) {
+      console.log("Encrypted File Key (Base64) backend:", encryptedFileKeyBuffer);
+      console.log("Key IV (Base64)backend:", keyIv);
+      console.log("File Data IV (Base64)backend:", fileDataIv);
+
+
+      if (!encryptedFileKeyBuffer || !keyIv || !fileDataIv) {
         setError("Missing encryption metadata.");
         return;
       }
       
-      const encryptedFileKeyBuffer = base64ToArrayBuffer(encryptedFileKeyBase64);
-      const keyIv = new Uint8Array(base64ToArrayBuffer(keyIvBase64));
-      const fileDataIv = new Uint8Array(base64ToArrayBuffer(fileDataIvBase64));
+      // Convert header values from base64 to array buffer
       
+      // Derive the users KEK 
       const saltBuffer = base64ToArrayBuffer(user.salt);
       const kek = await deriveKey(user.password, saltBuffer);
       
-      const fileKeyRaw = await decryptData(encryptedFileKeyBuffer, keyIv, kek);
+      // Decrypt the file key using the KEK
+      const decryptedFileKeyBuffer = await crypto.subtle.decrypt(
+        { name: "AES-GCM" , iv: keyIv },
+        kek,
+        encryptedFileKeyBuffer
+      );
+
       const fileKey = await crypto.subtle.importKey(
         "raw",
-        fileKeyRaw,
+        decryptedFileKeyBuffer,
         { name: "AES-GCM" },
         true,
         ["decrypt"]
       );
-      */
-      const encryptedBlob = await response.blob();
-      //const encryptedBuffer = await encryptedBlob.arrayBuffer();
-      // Assume first 12 bytes of the blob are the file IV (or use header fileDataIv)
-      //const ciphertext = encryptedBuffer.slice(12);
-      
-      //const decryptedBuffer = await decryptData(ciphertext, fileDataIv, fileKey);
-      
-      const url = URL.createObjectURL(encryptedBlob);
+      // Get the encrypted file data as an Arraybuffer
+     
+      const decryptedBuffer = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: fileDataIv },
+        fileKey,
+        encryptedBuffer
+      );
+
+      //Create a blob from the decrypted data and trigger a download
+
+      const decryptedBlob = new Blob([new Uint8Array(decryptedBuffer)]);
+
+     
+      const url = URL.createObjectURL(decryptedBlob);
       const a = document.createElement("a");
       a.href = url;
       a.download = filename;
@@ -237,6 +399,70 @@ const uploadFile = async () => {
     }
   };
 
+  const downloadSharedFile = async (filename) => {
+    try {
+      // Fetch the shared file information (JSON) for the recipient.
+      const response = await fetch(`http://localhost:8000/shared-files/${user.id}/${encodeURIComponent(filename)}/download`);
+      if (!response.ok) {
+        console.error("Error response:", response);
+        const errorData = await response.text(); // Try to read the error message.
+        console.error("Error response body:", errorData);
+        setError("Download failed shared.");
+        return;
+      }
+      const data = await response.json();
+      // For shared files, we expect data to contain: file_data, encrypted_file_key, file_data_iv.
+      const encryptedBuffer = base64ToArrayBuffer(data.file_data);
+      const encryptedFileKeyBuffer = base64ToArrayBuffer(data.encrypted_file_key);
+      // For shared files, note: the file key was encrypted with the recipient's RSA public key,
+      // so we do not have a file_key_iv (unless you design it that way). We'll assume it's not needed.
+  
+      // Convert the file data IV.
+      const fileDataIv = new Uint8Array(base64ToArrayBuffer(data.file_data_iv));
+  
+      // Import the recipient's RSA private key.
+      // Assume you have a helper function that imports the key; and that the recipient's decrypted private key
+      // is stored in user.decrypted_private_key.
+      const recipientPrivateKey = await importRecipientPrivateKey(user.decrypted_private_key);
+  
+      // Decrypt the shared file key using the recipient's RSA private key.
+      const decryptedFileKeyBuffer = await crypto.subtle.decrypt(
+        { name: "RSA-OAEP" },
+        recipientPrivateKey,
+        encryptedFileKeyBuffer
+      );
+  
+      // Import the decrypted file key as an AES-GCM key.
+      const fileKey = await crypto.subtle.importKey(
+        "raw",
+        decryptedFileKeyBuffer,
+        { name: "AES-GCM" },
+        true,
+        ["decrypt"]
+      );
+  
+      // Decrypt the file data.
+      const decryptedBuffer = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: fileDataIv },
+        fileKey,
+        encryptedBuffer
+      );
+  
+      // Create a Blob from the decrypted data and trigger a download.
+      const decryptedBlob = new Blob([new Uint8Array(decryptedBuffer)]);
+      const url = URL.createObjectURL(decryptedBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setError("");
+    } catch (err) {
+      setError("Download shared file error: " + err.message);
+    }
+  };
+  
   // Delete file function.
   const deleteFile = async (filename) => {
     try {
@@ -277,6 +503,30 @@ async function importRecipientPublicKey(publicKeyPem) {
     ["encrypt"]
   )
 };
+async function importRecipientPrivateKey(privateKeyPem) {
+  const pemHeader = "-----BEGIN PRIVATE KEY-----";
+  const pemFooter = "-----END PRIVATE KEY-----";
+  let pemContents = privateKeyPem;
+  if (privateKeyPem.startsWith(pemHeader)) {
+    pemContents = privateKeyPem
+      .replace(pemHeader, "")
+      .replace(pemFooter, "")
+      .replace(/\s+/g, "");
+  }
+  const binaryDerString = window.atob(pemContents);
+  const binaryDer = new Uint8Array(binaryDerString.length);
+  for (let i = 0; i < binaryDerString.length; i++) {
+    binaryDer[i] = binaryDerString.charCodeAt(i);
+  }
+  return crypto.subtle.importKey(
+    "pkcs8",
+    binaryDer.buffer,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    true,
+    ["decrypt"]
+  );
+}
+
 
 const shareFile = async (filename, recipientUsername) => {
   try {
@@ -288,12 +538,15 @@ const shareFile = async (filename, recipientUsername) => {
     }
     
     const recipient = await recipientRes.json();
+
     console.log("Recipient:", recipient);
-    /*
-    if (!recipient.public_key) {
+    console.log("Recipient public key:", recipient.public_key);
+
+    const recipientPublicKey = recipient.public_key;
+    if (!recipientPublicKey) {
       setError("Recipient public key missing.");
       return;
-    } */
+    } 
     
     // 2. Get file record from state
     const fileRecord = files.find(f => f.filename === filename);
@@ -302,29 +555,35 @@ const shareFile = async (filename, recipientUsername) => {
       return;
     }
     
-    /* 3. Derive KEK using plaintext password and salt (which is stored in user state as Base64)
+    // 3. Derive KEK using plaintext password and salt (which is stored in user state as Base64)
     const saltBuffer = base64ToArrayBuffer(user.salt);
     const kek = await deriveKey(user.password, saltBuffer);
     
     // 4. Decrypt the file key using the stored encrypted file key and its IV
     const encryptedFileKeyBuffer = base64ToArrayBuffer(fileRecord.encrypted_file_key);
-    const keyIvBuffer = base64ToArrayBuffer(fileRecord.file_key_iv);
-    const fileKeyRaw = await decryptData(encryptedFileKeyBuffer, new Uint8Array(keyIvBuffer), kek);
-    
-    // 5. Encrypt the file key with the recipient's public key
-    const recipientPublicKey = await importRecipientPublicKey(recipient.public_key);
-    const sharedFileKeyBuffer = await crypto.subtle.encrypt(
-      { name: "RSA-OAEP" },
-      recipientPublicKey,
-      fileKeyRaw
+    const keyIv = new Uint8Array(base64ToArrayBuffer(fileRecord.file_key_iv));
+
+    const decryptedFileKeyBuffer = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: keyIv },
+      kek,
+      encryptedFileKeyBuffer
     );
-    const sharedFileKeyBase64 = arrayBufferToBase64(sharedFileKeyBuffer);
-    */
+
+    // 5. Encrypt the file key with the recipient's public key
+    const recipientPublicKey2 = await importRecipientPublicKey(recipient.public_key);
+    const encryptedKeyForRecipient = await crypto.subtle.encrypt(
+      { name: "RSA-OAEP"},
+      recipientPublicKey2,
+      decryptedFileKeyBuffer
+    );
+
+    const sharedFileKeyBase64 = arrayBufferToBase64(encryptedKeyForRecipient);
+
     // 6. Send the shared file key to the backend
     const shareRes = await fetch(`http://localhost:8000/users/${user.id}/share/${filename}?recipient_id=${recipient.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ })//shared_file_key: sharedFileKeyBase64 })
+      body: JSON.stringify({ shared_file_key: sharedFileKeyBase64 })
     });
     if (!shareRes.ok) {
       setError("Share failed.");
@@ -430,7 +689,7 @@ const generateExpiringShareLink = async (filename) => {
             {files.map((file) => (
               <li key={file.id}>
                 {file.filename}{" "}
-                <button onClick={() => downloadFile(file.filename)}>Download</button>{" "}
+                <button onClick={() => downloadFile(file)}>Download</button>{" "}
                 <button onClick={() => deleteFile(file.filename)}>Delete</button>{" "}
                 <ShareFile file={file} shareFile={shareFile} generateExpiringShareLink={generateExpiringShareLink}></ShareFile>              
               </li>
